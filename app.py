@@ -1,33 +1,81 @@
+
 import time
+import urllib.request
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
-from keras.datasets import mnist
 
 st.set_page_config(page_title="LSH Image Explorer", page_icon="🔎", layout="wide")
+
 DATA = Path(__file__).resolve().parent / "models"
 BIT_LENGTHS = [1, 2, 4, 8, 16, 32, 64, 128]
+
+MNIST_URL = "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz"
 
 
 @st.cache_data(show_spinner="Loading MNIST and saved LSH arrays...")
 def load_data():
-    (train_images, train_labels), (test_images, test_labels) = mnist.load_data()
-    # This matches the reversed training order used in the Colab preprocessing.
+    # Download MNIST directly without Keras or TensorFlow
+    mnist_path = Path("/tmp/mnist.npz")
+
+    if not mnist_path.exists():
+        urllib.request.urlretrieve(MNIST_URL, mnist_path)
+
+    # Load MNIST dataset
+    with np.load(mnist_path, allow_pickle=False) as mnist_data:
+        train_images = mnist_data["x_train"]
+        train_labels = mnist_data["y_train"]
+        test_images = mnist_data["x_test"]
+        test_labels = mnist_data["y_test"]
+
+    # Match the reversed training order used in Colab preprocessing
     train_images = train_images[::-1].copy()
     train_labels = train_labels[::-1].copy()
-    names = ["train_embeddings", "test_embeddings", "train_hashes", "test_hashes"]
-    saved = {name: np.load(DATA / f"{name}.npy", allow_pickle=False) for name in names}
-    saved.update(train_images=train_images, test_images=test_images,
-                 train_labels=train_labels, test_labels=test_labels)
+
+    # Load precomputed LSH arrays
+    names = [
+        "train_embeddings",
+        "test_embeddings",
+        "train_hashes",
+        "test_hashes",
+    ]
+
+    saved = {
+        name: np.load(DATA / f"{name}.npy", allow_pickle=False)
+        for name in names
+    }
+
+    saved.update(
+        train_images=train_images,
+        test_images=test_images,
+        train_labels=train_labels,
+        test_labels=test_labels,
+    )
+
+    # Validate dataset and embedding dimensions
     assert saved["train_hashes"].shape[1] >= 128
     assert saved["test_hashes"].shape[1] >= 128
-    assert len(train_images) == len(saved["train_hashes"]) == len(saved["train_embeddings"])
-    assert len(test_images) == len(saved["test_hashes"]) == len(saved["test_embeddings"])
-    assert saved["train_embeddings"].shape[1] == saved["test_embeddings"].shape[1]
-    return saved
 
+    assert (
+        len(train_images)
+        == len(saved["train_hashes"])
+        == len(saved["train_embeddings"])
+    )
+
+    assert (
+        len(test_images)
+        == len(saved["test_hashes"])
+        == len(saved["test_embeddings"])
+    )
+
+    assert (
+        saved["train_embeddings"].shape[1]
+        == saved["test_embeddings"].shape[1]
+    )
+
+    return saved
 
 try:
     d = load_data()
