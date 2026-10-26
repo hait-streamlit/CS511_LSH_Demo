@@ -6,10 +6,19 @@ from html import escape
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Rectangle
 
 import numpy as np
 import streamlit as st
+
+import io
+
+def show_plot(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", transparent=True, dpi=200, bbox_inches="tight")
+    buf.seek(0)
+    st.image(buf, width="stretch")
+    plt.close(fig)
 
 st.set_page_config(page_title="LSH Image Retrieval - Demo", page_icon="🔎", layout="wide")
 
@@ -165,8 +174,12 @@ def image_grid(indices, titles, query_idx, heading):
                 spine.set_visible(False)
             continue
 
+        #ax.imshow(images[j], cmap="gray", interpolation="nearest", vmin=0, vmax=255)
         ax.imshow(images[j], cmap="gray", interpolation="nearest", vmin=0, vmax=255)
-        ax.set_title(labels[j], fontsize=11, color="white", fontweight="medium", pad=12)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.add_patch(Rectangle((-0.5, -0.5), 28, 28, fill=False, edgecolor="white", linewidth=2, clip_on=False))
+        ax.set_title(labels[j], fontsize=11, color="white", fontweight="normal", pad=12)
 
         for spine in ax.spines.values():
             spine.set_visible(True)
@@ -175,8 +188,7 @@ def image_grid(indices, titles, query_idx, heading):
 
     fig.subplots_adjust(left=0.01, right=0.99, top=0.82, bottom=0.08, wspace=0.25)
 
-    st.pyplot(fig, transparent=True, use_container_width=True)
-    plt.close(fig)
+    show_plot(fig)
 
 
 def code_text(hashrow, bits):
@@ -295,6 +307,29 @@ def colored_hash_box(hash_bits, reference_bits=None, bits_per_row=32):
 def section_spacer():
     st.markdown("<div style='height: 40px;'></div>",
             unsafe_allow_html=True)
+    
+from tensorflow import keras
+
+@st.cache_resource
+def load_encoder():
+    model = keras.models.load_model("models/cnn_model.keras", compile=False)
+    return keras.Model(inputs=model.inputs, outputs=model.get_layer("embedding").output)
+
+encoder = load_encoder()
+hyperplanes = np.load("models/hyperplanes.npy")
+
+def encode_drawing(image):
+    x = image.astype(np.float32)[None, ..., None] / 255.0
+    embedding = encoder.predict(x, verbose=0)[0]
+    embedding = embedding / max(np.linalg.norm(embedding), 1e-10)
+    hash_code = (embedding @ hyperplanes >= 0).astype(np.uint8)
+    return embedding, hash_code
+
+
+def live_hamming_topk(query_hash, n_bits, k=10):
+    distances = np.count_nonzero(train_hashes[:, :n_bits] != query_hash[:n_bits], axis=1)
+    indices = np.argsort(distances, kind="stable")[:k]
+    return indices, distances[indices]
 
 st.title("LSH Image Explorer")
 st.caption("MNIST · CNN embeddings · Charikar random hyperplane hashing")
@@ -328,7 +363,7 @@ with st.container(border=True):
         st.button(
             "🎲 Random Query",
             on_click=random_query,
-            use_container_width=True
+            width="stretch"
         )
 
     # Center image and description
@@ -344,22 +379,16 @@ with st.container(border=True):
         with img_col:
             fig, ax = plt.subplots(figsize=(4, 4), dpi=100)
 
-            ax.imshow(
-                test_images[query_idx],
-                cmap="gray",
-                interpolation="nearest",
-                vmin=0,
-                vmax=255
-            )
+            #ax.imshow(test_images[query_idx], cmap="gray", interpolation="nearest", vmin=0, vmax=255)
+            ax.imshow(test_images[query_idx], cmap="gray", interpolation="nearest", vmin=0, vmax=255)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.add_patch(Rectangle((-0.5, -0.5), 28, 28, fill=False, edgecolor="white", linewidth=2, clip_on=False))
 
             ax.axis("off")
-            fig.subplots_adjust(
-                left=0, right=1,
-                top=1, bottom=0
-            )
+            fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
+            show_plot(fig)
 
         with text_col:
             st.markdown(f"### Query index: {query_idx}")
@@ -439,13 +468,11 @@ diff_matches = int(np.count_nonzero(qhash == dhash))
 def show_mnist(img):
     fig, ax = plt.subplots(figsize=(3, 3), dpi=100)
 
-    ax.imshow(
-        img,
-        cmap="gray",
-        interpolation="nearest",
-        vmin=0,
-        vmax=255
-    )
+    #ax.imshow(img, cmap="gray", interpolation="nearest", vmin=0, vmax=255)
+    ax.imshow(img, cmap="gray", interpolation="nearest", vmin=0, vmax=255)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.add_patch(Rectangle((-0.5, -0.5), 28, 28, fill=False, edgecolor="white", linewidth=2, clip_on=False))
 
     ax.axis("off")
     fig.subplots_adjust(
@@ -453,8 +480,7 @@ def show_mnist(img):
         top=1, bottom=0
     )
 
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
+    show_plot(fig)
 
 
 # ----------------------------------------
@@ -638,8 +664,7 @@ with st.expander("View binary codes"):
 
 # START PART 3
 
-
-st.subheader("Part 3 · Image retrieval")
+st.subheader("Part 3.1 · Image retrieval")
 
 HAMMING_RETRIEVAL_BITS = [8, 32, 122]
 
@@ -690,6 +715,104 @@ for n_bits in EXACT_RETRIEVAL_BITS:
     else:
         st.warning(f"No exact hash matches at {n_bits} bits. " "This illustrates the recall tradeoff.")
 
+# ----------------------------------------
+# C. Live retrieval
+# ----------------------------------------
+
+from streamlit_drawable_canvas import st_canvas
+from PIL import Image
+
+st.subheader("Part 3 · Live digit retrieval")
+st.caption("Draw a handwritten digit and retrieve the 10 closest MNIST training images using LSH.")
+
+left, center, right = st.columns([1, 3, 1])
+
+with center:
+    st.markdown("#### Draw a digit")
+
+    st.markdown("""
+    <style>
+    div[data-testid="stCustomComponentV1"] {
+        display: flex;
+        justify-content: center;
+    }
+
+    div[data-testid="stCustomComponentV1"] iframe {
+        width: 460px !important;
+        min-width: 460px !important;
+        height: 460px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    canvas = st_canvas(
+        fill_color="rgba(0, 0, 0, 1)",
+        stroke_width=24,
+        stroke_color="#FFFFFF",
+        background_color="#000000",
+        width=400,
+        height=400,
+        drawing_mode="freedraw",
+        key="digit_canvas"
+    )
+
+    live_bits = st.select_slider("Hash length", options=[8, 16, 32, 64, 128], value=32)
+    search = st.button("🔎 Find nearest neighbors", type="primary", width="stretch")
+
+def preprocess_drawing(image_data):
+    image = Image.fromarray(image_data.astype(np.uint8)).convert("RGBA")
+    background = Image.new("RGBA", image.size, (0, 0, 0, 255))
+    image = np.asarray(Image.alpha_composite(background, image).convert("L"))
+
+    # Find the bounding box of the handwritten digit
+    mask = image > 20
+    if not mask.any():
+        return np.zeros((28, 28), dtype=np.uint8)
+
+    ys, xs = np.where(mask)
+    digit = Image.fromarray(image[ys.min():ys.max() + 1, xs.min():xs.max() + 1])
+
+    # Resize while preserving aspect ratio
+    w, h = digit.size
+    scale = 20 / max(w, h)
+    digit = digit.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.Resampling.LANCZOS)
+
+    # Center on a 28x28 black canvas
+    result = Image.new("L", (28, 28), 0)
+    x = (28 - digit.width) // 2
+    y = (28 - digit.height) // 2
+    result.paste(digit, (x, y))
+
+    return np.asarray(result, dtype=np.uint8)
+
+def live_results_grid(indices, distances):
+    fig, axes = plt.subplots(1, 10, figsize=(18, 2.8), dpi=120, facecolor="none")
+
+    for j, ax in enumerate(axes):
+        idx = indices[j]
+        ax.imshow(train_images[idx], cmap="gray", interpolation="nearest", vmin=0, vmax=255)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel(f"Index: {idx}\nDigit: {train_labels[idx]}\nHamming: {distances[j]}", fontsize=9, color="white", labelpad=12)
+
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color("white")
+            spine.set_linewidth(1.5)
+
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.95, bottom=0.3, wspace=0.3)
+    show_plot(fig)
+
+
+if search and canvas.image_data is not None:
+    drawing = preprocess_drawing(canvas.image_data)
+    query_embedding, query_hash = encode_drawing(drawing)
+    indices, distances = live_hamming_topk(query_hash, live_bits)
+
+    st.markdown("#### Top 10 retrieved images")
+    st.caption(f"Nearest neighbors using {live_bits}-bit Hamming distance")
+    live_results_grid(indices, distances)
+
 section_spacer()
 
 # END PART 3
@@ -725,7 +848,7 @@ for ax in axes:
         spine.set_color("#888888")
 
 fig.tight_layout()
-st.pyplot(fig, transparent=True, use_container_width=True)
+st.pyplot(fig, width="stretch")
 plt.close(fig)
 
 st.caption(
