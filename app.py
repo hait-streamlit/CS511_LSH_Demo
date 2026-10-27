@@ -201,7 +201,10 @@ def query_metrics():
     with np.load(DATA / "retrieval_metrics.npz") as metrics:
         return (
             metrics["avg_candidates"].copy(),
-            metrics["avg_recall"].copy()
+            metrics["avg_recall"].copy(),
+            metrics["avg_bucket_ms"].copy(),
+            float(metrics["exact_ms"]),
+            float(metrics["hamming_ms"])
         )
 
 def hash_box(hash_text, bytes_per_row=4):
@@ -567,8 +570,8 @@ def bit_circle_comparison(qhash, shash, dhash, bits):
     st.markdown("#### Bit-by-bit comparison")
 
     comparisons = [
-        ("Same label", qhash == shash),
-        ("Different label", qhash == dhash)
+        ("Same label", qhash[:bits] == shash[:bits]),
+        ("Different label", qhash[:bits] == dhash[:bits])
     ]
 
     html_parts = [
@@ -583,6 +586,7 @@ def bit_circle_comparison(qhash, shash, dhash, bits):
         html_parts.append(
             f'<div style="margin-bottom:24px;">'
             f'<div style="display:flex; justify-content:space-between; '
+            f'flex-wrap:wrap; gap:8px; '
             f'color:white; font-size:17px; font-weight:600; '
             f'margin-bottom:14px;">'
             f'<span>{escape(label)}</span>'
@@ -591,35 +595,27 @@ def bit_circle_comparison(qhash, shash, dhash, bits):
             f'</div>'
         )
 
-        # Display 32 circles per row
-        for start in range(0, len(matches), 32):
-            chunk = matches[start:start + 32]
+        html_parts.append(
+            '<div style="display:flex; flex-wrap:wrap; '
+            'gap:12px; margin-bottom:8px;">'
+        )
+
+        for position, match in enumerate(matches, start=1):
+            color = "#299764" if match else "#D34A49"
+            status = "Match" if match else "Mismatch"
 
             html_parts.append(
-                '<div style="display:flex; gap:12px; '
-                'margin-bottom:8px; flex-wrap:nowrap;">'
+                f'<span title="Bit {position}: {status}" '
+                f'style="display:inline-block; width:18px; '
+                f'height:18px; flex:0 0 18px; '
+                f'border-radius:50%; '
+                f'background-color:{color};"></span>'
             )
 
-            for offset, match in enumerate(chunk):
-                color = "#299764" if match else "#D34A49"
-                position = start + offset + 1
-                status = "Match" if match else "Mismatch"
+        html_parts.append('</div></div>')
 
-                html_parts.append(
-                    f'<span title="Bit {position}: {status}" '
-                    f'style="display:inline-block; width:18px; '
-                    f'height:18px; min-width:18px; '
-                    f'border-radius:50%; '
-                    f'background-color:{color};"></span>'
-                )
-
-            html_parts.append('</div>')
-
-        html_parts.append('</div>')
-
-    # Legend
     html_parts.append(
-        '<div style="display:flex; gap:24px; '
+        '<div style="display:flex; flex-wrap:wrap; gap:16px; '
         'color:#aaaaaa; font-size:14px;">'
         '<span>🟢 Matching bit</span>'
         '<span>🔴 Different bit</span>'
@@ -628,12 +624,7 @@ def bit_circle_comparison(qhash, shash, dhash, bits):
 
     html_parts.append('</div>')
 
-    # Join without Markdown-indented HTML
-    st.markdown(
-        "".join(html_parts),
-        unsafe_allow_html=True
-    )
-
+    st.markdown("".join(html_parts), unsafe_allow_html=True)
 
 bit_circle_comparison(qhash, shash, dhash, bits)
 
@@ -821,7 +812,7 @@ section_spacer()
 
 st.subheader('Part 4 · Average candidate count vs. missed nearest neighbors')
 
-counts, recalls = query_metrics()
+counts, recalls, bucket_ms, exact_ms, hamming_ms = query_metrics()
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 4), facecolor="none")
 
@@ -855,6 +846,52 @@ st.caption(
     'Results averaged across the first 100 MNIST test queries. '
     'Ground truth = 10 nearest training embeddings by exact cosine similarity. '
     'Recall measures the fraction of those neighbors retained by exact-bucket filtering.'
+)
+
+# Timing comparison
+st.markdown("#### Retrieval latency comparison")
+
+timing_data = [
+    {
+        "Method": "Exact cosine (baseline)",
+        "Avg. latency (ms)": exact_ms,
+        "Speedup": 1.0
+    },
+    {
+        "Method": "Hamming (128 bits)",
+        "Avg. latency (ms)": hamming_ms,
+        "Speedup": exact_ms / hamming_ms
+    }
+]
+
+for bits, ms in zip(BIT_LENGTHS, bucket_ms):
+    timing_data.append({
+        "Method": f"Exact bucket ({bits} bits)",
+        "Avg. latency (ms)": float(ms),
+        "Speedup": exact_ms / ms
+    })
+
+st.dataframe(
+    timing_data,
+    column_config={
+        "Method": st.column_config.TextColumn("Retrieval method"),
+        "Avg. latency (ms)": st.column_config.NumberColumn(
+            "Average latency (ms)",
+            format="%.4f"
+        ),
+        "Speedup": st.column_config.NumberColumn(
+            "Speedup vs. exact",
+            format="%.2f×"
+        )
+    },
+    hide_index=True,
+    width="stretch"
+)
+
+st.caption(
+    "Latency measured over 100 test queries, excluding preprocessing "
+    "and index construction. Exact-bucket retrieval uses a prebuilt hash index. "
+    "Speedups are relative to full-sort exact cosine retrieval."
 )
 
 st.success(
