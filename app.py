@@ -131,14 +131,22 @@ def exact_topk(query_idx, k=10):
 
 
 def hamming_topk(query_idx, bits, k=10):
-    distances = np.count_nonzero(train_hashes[:, :bits] != test_hashes[query_idx, :bits], axis=1)
+    distances = np.count_nonzero(
+        train_hashes[:, :bits] != test_hashes[query_idx, :bits],
+        axis=1
+    )
+
     k = min(k, len(distances))
+    if k == 0:
+        return np.array([], dtype=int), distances[:0]
+
     threshold = np.partition(distances, k - 1)[k - 1]
     eligible = np.flatnonzero(distances <= threshold)
-    # Exact cosine similarity breaks ties between equally distant binary codes.
-    cosine = cosine_scores(query_idx, eligible)
-    order = np.lexsort((-cosine, distances[eligible]))[:k]
-    return eligible[order], distances[eligible[order]]
+
+    # Return first k eligible indices without sorting
+    selected = eligible[:k]
+
+    return selected, distances[selected]
 
 
 def bucket_topk(query_idx, bits, k=10):
@@ -429,17 +437,41 @@ st.caption(
     "Existing bits do not change."
 )
 
+
 # Separate animation section
 st.markdown("#### Watch the hash grow")
 
-if st.button("▶ Play 1 → 128 bits"):
+# Initialize animation state
+if "animation_visible" not in st.session_state:
+    st.session_state.animation_visible = False
+
+col1, col2 = st.columns(2)
+
+with col1:
+    play = st.button("▶ Play 1 → 128 bits")
+
+with col2:
+    clear = st.button("↺ Clear animation")
+
+# Clear animation
+if clear:
+    st.session_state.animation_visible = False
+
+# Play animation
+if play:
+    st.session_state.animation_visible = True
     animation_display = st.empty()
 
     for v in range(1, 129):
         with animation_display.container():
             hash_box(code_text(test_hashes[query_idx], v))
 
-        time.sleep(0.035)
+        time.sleep(0.100)
+
+# Keep final animation frame visible
+elif st.session_state.animation_visible:
+    hash_box(code_text(test_hashes[query_idx], 128))
+
 
 section_spacer()
 
